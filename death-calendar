@@ -1,0 +1,237 @@
+#!/bin/bash
+
+# Performs addition of 2 vectors vectors are in form "INT,INT"
+#   example: vec_add "20,-5" "5,10"  -->  "25,5"
+function vec_add(){
+  echo "$1,$2" | awk '{ split($1,v,","); printf("%d,%d",v[1]+v[3],v[2]+v[4]); }'
+}
+
+# Performs addition of 2 vectors vectors are in form "INT,INT"
+#   example: vec_sub "20,-5" "5,10"  -->  "15,-15"
+function vec_sub(){
+  echo "$1,$2" | awk '{ split($1,v,","); printf("%d,%d",v[1]-v[3],v[2]-v[4]); }'
+}
+
+# Performs multiplication of vector and scalar.
+#   example: vec_mul "20,-5" 4  -->  "80,-20"
+function vec_mul(){
+  echo "$1,$2" | awk '{ split($1,v,","); printf("%d,%d",v[1]*v[3],v[2]*v[3]); }'
+}
+
+function vec_x(){
+  echo "$1" | cut -d"," -f1
+}
+
+function vec_y(){
+  echo "$1" | cut -d"," -f2
+}
+
+
+# Converts special characters in URI to normal characters
+#   example: convert_uri "/home/user/Long%20file.jpg" --> "/home/user/Long file.jpg"
+function convert_uri(){
+  URI=$1
+  [ -z "$URI" ] && URI=$(cat -)
+  while true; do
+
+    BEGIN=${URI%%%*}
+    BEG_LEN=${#BEGIN}
+
+    [ ${#BEGIN} -eq ${#URI} ] && break
+
+    URI="${URI:0:BEG_LEN}\x${URI:BEG_LEN+1:2}${URI:BEG_LEN+3}"
+  done
+
+  echo -e "$URI"
+}
+
+# Calc passed expresion and round to nearest integer.
+#   exmaple: calc_round "14.55-2" --> "13"
+function calc_round(){
+  echo "($1)+0.5" | bc -l | sed 's/\..*//'
+}
+
+# Calc passed expression and perform floor operation.
+#   example: calc_floor "14.55-2" --> "12"
+function calc_floor(){
+  echo "($1)" | bc -l | sed 's/\..*//'
+}
+
+# Fits wallpaper to screen. Returns new top-left and bottom-right coords
+# inside wallpaper that covers it in proper aspect (same as screen has).
+function get_image_bounds(){
+  SCREEN_WIDTH=$(vec_x $1)
+  SCREEN_HEIGHT=$(vec_y $1)
+  WALL_WIDTH=$(vec_x $2)
+  WALL_HEIGHT=$(vec_y $2)
+
+  SCREEN_ASPECT=$(echo $SCREEN_WIDTH/$SCREEN_HEIGHT | bc -l)
+  WALL_ASPECT=$(echo $WALL_WIDTH/$WALL_HEIGHT | bc -l)
+
+  TASKBAR_HEIGHT="22"
+  TASKBAR_FIX=$((TASKBAR_HEIGHT*WALL_HEIGHT/SCREEN_HEIGHT))
+
+   if [ $(echo "$SCREEN_ASPECT > $WALL_ASPECT" | bc) -eq "1" ]; then
+     NEW_WALL_HEIGHT=$(calc_round "$WALL_WIDTH / $SCREEN_ASPECT")
+     OFFSET=$(( (WALL_HEIGHT-NEW_WALL_HEIGHT)/2))
+     TL="0,$((OFFSET+TASKBAR_FIX))"
+     BR="$WALL_WIDTH,$((WALL_HEIGHT-OFFSET))"
+   else
+     NEW_WALL_WIDTH=$(calc_round "$WALL_HEIGHT * $SCREEN_ASPECT")
+     OFFSET=$(( (WALL_WIDTH-NEW_WALL_WIDTH)/2 ))
+     TL="$OFFSET,$TASKBAR_FIX"
+     BR="$((WALL_WIDTH-OFFSET)),$WALL_HEIGHT"
+   fi
+
+  echo "$TL $BR"
+}
+
+
+# ------------- system check ---------------
+
+ERR=0
+which gsettings &>/dev/null || ( ERR=1 && echo "gsettings not available... Do you even use gnome?" )
+which convert &>/dev/null || ( ERR=1 && echo "imagemagick (convert) not available..." )
+which identify &>/dev/null || ( ERR=1 && echo "imagemagick (identify) not available..." )
+
+[ $ERR -ne "0" ] && echo "Errors detected. Exit." && exit 1
+
+# -------------- parsing arguments -----------
+
+while [ $# -gt 0 ]; do
+  if [[ "$1" =~ ^(-b|--birth=) ]]; then
+    BIRTH=${1/${BASH_REMATCH[1]}} && [ -z "$BIRTH" ] && shift && BIRTH="$1"
+  elif [[ "$1" =~ ^(-d|--death=) ]]; then
+    DEATH=${1/${BASH_REMATCH[1]}} && [ -z "$DEATH" ] && shift && DEATH="$1"
+  elif [[ "$1" =~ ^(-w|--wallpaper=) ]]; then
+    WALLFILE=${1/${BASH_REMATCH[1]}} && [ -z "$WALLFILE" ] && shift && WALLFILE="$1"
+    WALLFILE=$(realpath $WALLFILE)
+  elif [[ "$1" =~ ^-f|--force$ ]]; then
+    FORCE=1
+  elif [ "$1" == "refresh" ]; then
+    REFRESH=1
+  elif [ "$1" == "info" ]; then
+    INFO=1
+  else
+    echo "Invalid argument $1" && exit 1
+  fi
+
+  shift
+done
+
+# ---------------- loading config -----------------
+
+LOCAL_DIR=~/.local/share/death
+CONFIG="config"
+mkdir "$LOCAL_DIR" 2>/dev/null
+cd "$LOCAL_DIR"
+
+CONF_FILE=""
+source "$CONFIG" 2>/dev/null || touch "$CONFIG"
+
+
+BIRTH=${BIRTH-$CONF_BIRTH}
+DEATH=${DEATH-$CONF_DEATH}
+WALLFILE=${WALLFILE-$CONF_FILE}
+
+[ -z "$WALLFILE" ] && echo "Wallpaper not specified." && exit 1
+[ ! -r "$WALLFILE" ] && echo "Wallpaper '$WALLFILE' is not a readable file." && exit 1
+
+# ------- screen resolution -------------
+
+DPYINFO=$(xdpyinfo | grep -E 'screen #[0-9]+:' -A1 | sed -r 's/:|#([0-9]+)/\1/g' |
+awk '{
+  if ($1=="screen"){
+    screen=$2
+  }
+  else if ($1=="dimensions"){
+    split($2,dim,"x");
+    print screen, dim[1], dim[2];
+  }
+}')
+
+PRIMARY_SCREEN_INFO=$(echo "$DPYINFO" | head -n 1)
+SCREENX=$(echo "$PRIMARY_SCREEN_INFO" | cut -d" " -f2)
+SCREENY=$(echo "$PRIMARY_SCREEN_INFO" | cut -d" " -f3)
+ASPECT=$(echo "$SCREENX/$SCREENY" | bc -l)
+
+
+# -------- dates conversion & time calculations -----------
+
+date --date="$BIRTH" 1>/dev/null 2>&1  || (echo "Birth is not a date" && exit 1)
+
+date --date="$DEATH" 1>/dev/null 2>&1
+if [ $? -ne "0" ] ; then
+  [[ ! $DEATH =~ [0-9]+ ]] && echo "Death is not an integer nor a valid date" && exit 1
+
+  if [ $DEATH -lt "200" ]; then
+    DEATH="$BIRTH +$DEATH year"
+  else
+    DEATH="$DEATH-01-01"
+  fi
+fi
+
+BIRTH_UNIX=`date '+%s' --date="$BIRTH"`
+DEATH_UNIX=`date '+%s' --date="$DEATH"`
+CURR_UNIX=`date '+%s'`
+
+if [ "$BIRTH_UNIX" -ge "$DEATH_UNIX" ]; then
+  echo "Birth later than death." && exit 1
+fi
+
+# in weeks
+ELAPSED=$(( (CURR_UNIX-BIRTH_UNIX)/(3600*24*7) ))
+TOTAL=$(( (DEATH_UNIX-BIRTH_UNIX)/(3600*24*7) ))
+
+# Check whether wallpaper should be reset
+WORKWALL="wallpaper.${WALLFILE##*.}"
+if [[ -z $CONF_ELAPSED || $TOTAL -ne $CONF_TOTAL || $((ELAPSED-CONF_ELAPSED)) -lt 0 || "$FORCE" == "1" ]]; then
+  CONF_TOTAL=$TOTAL
+  CONF_ELAPSED="0"
+  cp "$WALLFILE" "$WORKWALL"
+fi
+
+DIFF=$((ELAPSED-CONF_ELAPSED))
+WALLSIZE=$(identify -verbose "$WALLFILE" | grep Geometry | sed 's_[^0-9]*\([0-9]\+\)x\([0-9]\+\).*_\1,\2_')
+
+# -------------- calculations ---------------------
+
+XSPAN="$(calc_round "sqrt($TOTAL*$ASPECT)")"
+YSPAN="$(calc_round $TOTAL/$XSPAN)"
+SIZE=$(calc_floor $(vec_x $WALLSIZE)/$XSPAN)
+
+BOUNDS=$(get_image_bounds $SCREENX,$SCREENY $WALLSIZE)
+TOPLEFT=$(echo "$BOUNDS" | cut -d" " -f1)
+
+XOFFSET=$(vec_x $TOPLEFT)
+YOFFSET=$(( $(vec_y $TOPLEFT) )) #+ $(vec_y $WALLSIZE)*24/SCREENY ))
+
+# ------------- perform -----------------------
+
+CMD=""
+
+REGPADD=$((SIZE*25/25)) && [ $(((SIZE-REGPADD)%2)) -eq "1" ] && REGPADD=$((REGPADD+1))
+PADD_OFFSET=$(((SIZE-REGPADD)/2))
+REGSIZE=$REGPADD"x"$REGPADD
+
+for (( I=$CONF_ELAPSED; I<$ELAPSED; I++ )); do
+  X=$((I/YSPAN*SIZE+PADD_OFFSET+XOFFSET))
+  Y=$((I%YSPAN*SIZE+PADD_OFFSET+YOFFSET))
+  CMD+=" -region $REGSIZE+$X+$Y -negate -brightness-contrast -$((RANDOM%10+80))"
+done
+
+# convert "$WORKWALL" -fill '#131313' -stroke '#0e0e0e' -strokewidth 1 -draw "$CMD" "$WORKWALL"
+#echo "convert \"$WORKWALL\" $CMD \"$WORKWALL\""
+convert "$WORKWALL" $CMD "$WORKWALL"
+
+
+gsettings set org.gnome.desktop.background picture-uri "file://$(realpath "$WORKWALL")"
+
+# ---------- write config file -----------
+[[ "$DEATH" =~ .*\ \+([0-9]+)\ year ]] && DEATH=${BASH_REMATCH[1]}
+echo -e "\
+CONF_FILE=\"$WALLFILE\"\n\
+CONF_TOTAL=\"$TOTAL\"\n\
+CONF_ELAPSED=\"$ELAPSED\"\n\
+CONF_BIRTH=\"$BIRTH\"\n\
+CONF_DEATH=\"$DEATH\"" > "$CONFIG"

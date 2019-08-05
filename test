@@ -1,0 +1,10 @@
+#!/bin/bash
+
+function fun(){
+  echo "Num of params: $#"
+}
+
+PASS="one two three"
+PASS2="$PASS"
+
+fun $PASS2

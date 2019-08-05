@@ -1,0 +1,38 @@
+death-calendar [-u <user>] command [args]
+birthday <bd>    Sets birthday.
+death <dt>       Sets estimated death date. Either date or years left can be used.
+info             Display info about user.
+refresh          Refresh wallpaper.
+
+
+# example
+
+# screen
+sw = 1366
+sh = 768
+sa = 1.778 // aspect
+
+# wallpaper
+ww = 2880
+wh = 1800
+wa = 1.6
+
+if (sa > wa){
+  nwh = ww / sa
+  offset = (wh-nwh)/2
+  tl = (0, offset)
+  br = (ww, wh-offset)
+}
+else{
+  nww = wh * sa
+  offset = (ww - nww)/2
+  tl = (offset,0)
+  br = (ww-offset, wh)
+}
+
+# all weeks
+t = 52*70 = 3640
+
+x * x/a = t
+x = sqrt(t*a)
+y = t/x
